@@ -1,0 +1,407 @@
+/**
+ * @fileoverview Core BTCLocker initialization and utilities
+ */
+
+import * as bitcoin from "bitcoinjs-lib";
+import { BIP32Factory } from "bip32";
+import { ECPairFactory } from "ecpair";
+import tinysecp from "@bitcoinerlab/secp256k1";
+import type { ECCLib, InitializedECC } from "../types.js";
+import { NetworkType, NETWORKS } from "../utils/network.js";
+import BitcoinAPI from "../bitcoin-api.js";
+
+/** Shared context for transaction-building functions */
+export interface LockerContext {
+  network: bitcoin.Network;
+  api: BitcoinAPI;
+}
+
+/**
+ * Encode a witness stack into the compact serialization used by PSBT finalizers.
+ * Each item is length-prefixed; the whole stack is prefixed with the item count.
+ */
+function psbtEncodeWitness(items: Buffer[]): Buffer {
+  const chunks: Buffer[] = [];
+  // varint for item count
+  chunks.push(Buffer.from([items.length]));
+  for (const item of items) {
+    // varint for item length
+    chunks.push(Buffer.from([item.length]));
+    chunks.push(item);
+  }
+  return Buffer.concat(chunks);
+}
+
+// ECC will be initialized asynchronously
+let ecc: ECCLib | null = null;
+let bip32: ReturnType<typeof BIP32Factory> | null = null;
+let ECPair: ReturnType<typeof ECPairFactory> | null = null;
+
+/**
+ * Initialize ECC asynchronously for browser compatibility
+ * @returns Promise that resolves when ECC is initialized
+ * @throws If ECC initialization fails
+ */
+export async function initECC(): Promise<InitializedECC> {
+  if (!ecc) {
+    try {
+      // Handle ES module default export
+      ecc = (tinysecp as any).default || tinysecp;
+
+      // Validate ECC library has required methods
+      if (!ecc || typeof ecc !== "object") {
+        throw new Error("ECC library is not an object");
+      }
+
+      const requiredMethods = ["isPoint", "isPrivate", "pointFromScalar"];
+      for (const method of requiredMethods) {
+        if (typeof (ecc as any)[method] !== "function") {
+          throw new Error(`ECC library missing required method: ${method}`);
+        }
+      }
+
+      // Initialize bitcoinjs-lib with the ECC library
+      // TODO: These interfaces do not fit together cleanly. There is probably a better way to do this.
+      bitcoin.initEccLib(ecc as any);
+      bip32 = BIP32Factory(ecc as any);
+      ECPair = ECPairFactory(ecc as any);
+
+      // Validate factories
+      if (!bip32 || !ECPair) {
+        throw new Error("Failed to create BIP32 or ECPair factories");
+      }
+    } catch (error) {
+      throw new Error(`Failed to initialize ECC: ${(error as Error).message}`);
+    }
+  }
+
+  if (!ecc || !bip32 || !ECPair) {
+    throw new Error("Last chance validation - ECC not initialized");
+  }
+  return { ecc, bip32, ECPair };
+}
+
+/**
+ * Get the initialized ECC components
+ * @returns Object containing initialized ECC components
+ * @throws If ECC components are not initialized
+ * @example
+ * const { ecc, bip32, ECPair } = getECC();
+ */
+export function getECC(): InitializedECC {
+  if (!ecc || !bip32 || !ECPair) {
+    throw new Error("ECC not initialized. Call initECC() first.");
+  }
+  return { ecc, bip32, ECPair };
+}
+
+export class BTCLockerCore {
+  public network: bitcoin.Network;
+  public initialized: boolean;
+  public api: BitcoinAPI;
+
+  /**
+   * Create a new BTCLockerCore instance
+   * @param network - Bitcoin network ('bitcoin', 'testnet', 'regtest') or network object
+   * @param api - Optional BitcoinAPI instance (will create default if not provided)
+   * @example
+   * // Using string network name
+   * const core = new BTCLockerCore('testnet');
+   * await core.init();
+   *
+   * // Using network object with custom API
+   * const api = new BitcoinAPI('testnet', 'mempool');
+   * const core = new BTCLockerCore(bitcoin.networks.testnet, api);
+   * await core.init();
+   */
+  constructor(network: NetworkType = NETWORKS.bitcoin, api?: BitcoinAPI) {
+    this.network = network.info;
+
+    // Initialize API with network type
+    if (api) {
+      this.api = api;
+    } else {
+      this.api = new BitcoinAPI(network);
+    }
+
+    this.initialized = false;
+  }
+
+  /**
+   * Initialize the BTCLocker with ECC library
+   * @returns Promise that resolves when initialization is complete
+   * @throws If ECC initialization fails
+   * @example
+   * const locker = new BTCLockerCore();
+   * await locker.init();
+   */
+  async init(): Promise<void> {
+    if (!this.initialized) {
+      await initECC();
+      this.initialized = true;
+    }
+  }
+
+  /**
+   * Ensure the instance is initialized, throw error if not
+   * @returns Promise that resolves if initialized
+   * @throws If not initialized
+   */
+  protected async ensureInitialized(): Promise<void> {
+    if (!this.initialized) {
+      await this.init();
+    }
+  }
+
+  /**
+   * Sign any transaction PSBT with one or more private keys
+   * @param unsignedPsbt - Unsigned PSBT in base64 format
+   * @param privateKeys - Single private key or array of private keys for multiple inputs
+   * @param options - Optional signing options
+   * @returns Signed transaction hex
+   * @throws If signing fails
+   * @example
+   * // Single key for all inputs
+   * const signedHex = await locker.signTransaction(unsignedPsbt, privateKey);
+   *
+   * // Multiple keys for multiple inputs
+   * const signedHex = await locker.signTransaction(unsignedPsbt, [escrowKey, timelockKey]);
+   */
+  async signTransaction(
+    unsignedPsbt: string,
+    privateKeys: string | string[],
+    options?: { spendAfterDeadline?: boolean },
+  ): Promise<string> {
+    await this.ensureInitialized();
+    const { ECPair } = getECC();
+
+    if (!unsignedPsbt || typeof unsignedPsbt !== "string") {
+      throw new Error("unsignedPsbt is required and must be a string");
+    }
+
+    const keys = Array.isArray(privateKeys) ? privateKeys : [privateKeys];
+    if (keys.length === 0) {
+      throw new Error("At least one private key is required");
+    }
+
+    try {
+      const psbt = bitcoin.Psbt.fromBase64(unsignedPsbt, {
+        network: this.network,
+      });
+
+      // Create key pairs
+      const keyPairs = keys.map((key) => {
+        if (!key || typeof key !== "string") {
+          throw new Error("All private keys must be valid hex strings");
+        }
+        return ECPair.fromPrivateKey(Buffer.from(key, "hex"), {
+          network: this.network,
+        });
+      });
+
+      // Sign each input with appropriate key
+      for (let i = 0; i < psbt.inputCount; i++) {
+        const keyPair = keyPairs[i] || keyPairs[0]; // Use per-input key or default to first key
+        const input = psbt.data.inputs[i];
+
+        // Update witnessUtxo if needed for P2WPKH inputs
+        if (
+          input.witnessUtxo &&
+          (!input.witnessUtxo.script ||
+            input.witnessUtxo.script.length === 0 ||
+            input.witnessUtxo.script.every((byte) => byte === 0))
+        ) {
+          input.witnessUtxo.script =
+            bitcoin.payments.p2wpkh({
+              pubkey: keyPair.publicKey,
+              network: this.network,
+            }).output ??
+            (() => {
+              throw new Error("Failed to generate P2WPKH output script");
+            })();
+        }
+
+        try {
+          psbt.signInput(i, keyPair);
+        } catch (error) {
+          throw new Error(
+            `Failed to sign input ${i}: ${(error as Error).message}`,
+          );
+        }
+      }
+
+      const finalizedPsbt = this.finalizeTransaction(
+        psbt,
+        options?.spendAfterDeadline,
+      );
+
+      const transaction = finalizedPsbt.extractTransaction();
+      return transaction.toHex();
+    } catch (error) {
+      throw new Error(
+        `Failed to sign transaction: ${(error as Error).message}`,
+      );
+    }
+  }
+
+  finalizeTransaction(
+    psbt: bitcoin.Psbt,
+    spendAfterDeadline = false,
+  ): bitcoin.Psbt {
+    // Auto-finalize based on script structure
+    for (let i = 0; i < psbt.inputCount; i++) {
+      const input = psbt.data.inputs[i];
+
+      if (input.witnessScript) {
+        // P2WSH: custom finalization — witness stack, empty scriptSig
+        const witnessScript = Buffer.from(input.witnessScript);
+
+        if (this.hasConditionalLogic(witnessScript)) {
+          // Escrow-style script with conditional logic (IF/ELSE)
+          psbt.finalizeInput(i, (inputIndex: number, inputData: any) => {
+            const signature = inputData.partialSig?.[0]?.signature;
+            if (!signature) {
+              throw new Error(`Missing signature for input ${inputIndex}`);
+            }
+            // P2WSH witness: <sig> <branch_selector> <witnessScript>
+            const witness = [
+              signature,
+              spendAfterDeadline
+                ? Buffer.from([0x01]) // OP_TRUE branch
+                : Buffer.alloc(0),    // OP_FALSE branch (empty = falsy)
+              witnessScript,
+            ];
+
+            return {
+              finalScriptSig: Buffer.alloc(0),
+              finalScriptWitness: psbtEncodeWitness(witness),
+            };
+          });
+        } else {
+          // Simple P2WSH script or timelock script
+          psbt.finalizeInput(i, (inputIndex: number, inputData: any) => {
+            const signature = inputData.partialSig?.[0]?.signature;
+            if (!signature) {
+              throw new Error(`Missing signature for input ${inputIndex}`);
+            }
+
+            const witness = [signature, witnessScript];
+
+            return {
+              finalScriptSig: Buffer.alloc(0),
+              finalScriptWitness: psbtEncodeWitness(witness),
+            };
+          });
+        }
+      } else if (input.redeemScript) {
+        // Legacy P2SH: custom finalization — scriptSig, no witness
+        const redeemScript = Buffer.from(input.redeemScript);
+
+        if (this.hasConditionalLogic(redeemScript)) {
+          psbt.finalizeInput(i, (inputIndex: number, inputData: any) => {
+            const signature = inputData.partialSig?.[0]?.signature;
+            if (!signature) {
+              throw new Error(`Missing signature for input ${inputIndex}`);
+            }
+            const scriptSig = bitcoin.script.compile([
+              signature,
+              spendAfterDeadline
+                ? bitcoin.opcodes.OP_TRUE
+                : bitcoin.opcodes.OP_FALSE,
+              redeemScript,
+            ]);
+
+            return {
+              finalScriptSig: scriptSig,
+              finalScriptWitness: undefined,
+            };
+          });
+        } else {
+          psbt.finalizeInput(i, (inputIndex: number, inputData: any) => {
+            const signature = inputData.partialSig?.[0]?.signature;
+            if (!signature) {
+              throw new Error(`Missing signature for input ${inputIndex}`);
+            }
+
+            const scriptSig = bitcoin.script.compile([signature, redeemScript]);
+
+            return {
+              finalScriptSig: scriptSig,
+              finalScriptWitness: undefined,
+            };
+          });
+        }
+      } else {
+        // Standard finalization
+        psbt.finalizeInput(i);
+      }
+    }
+
+    return psbt;
+  }
+
+  /**
+   * Check if a redeem script has conditional logic (IF/ELSE)
+   * FIX: use opcode-aware decompile() instead of raw Buffer.includes() to
+   * avoid false positives when pubkey bytes happen to equal 0x63 (OP_IF) or
+   * 0x64 (OP_NOTIF).  Buffer.includes() is a raw byte search and will match
+   * those values inside push-data regions, producing the wrong witness layout.
+   */
+  private hasConditionalLogic(redeemScript: Buffer): boolean {
+    const ops = bitcoin.script.decompile(redeemScript);
+    if (!ops) return false;
+    return ops.some(
+      (op) =>
+        op === bitcoin.opcodes.OP_IF ||
+        op === bitcoin.opcodes.OP_NOTIF,
+    );
+  }
+
+  /**
+   * Submit any signed transaction to the Bitcoin network
+   * @param transactionHex - Signed transaction in hex format
+   * @param options - Optional submission options
+   * @returns Transaction ID if submitted successfully
+   * @throws If submission fails
+   * @example
+   * const txid = await locker.submitTransaction('01000000...');
+   *
+   * // With custom API
+   * const txid = await locker.submitTransaction('01000000...', { api: customAPI });
+   */
+  async submitTransaction(
+    transactionHex: string,
+    options?: { api?: BitcoinAPI },
+  ): Promise<string> {
+    if (!transactionHex || typeof transactionHex !== "string") {
+      throw new Error("transactionHex is required and must be a string");
+    }
+
+    try {
+      // Parse transaction to validate and get txid
+      const transaction = bitcoin.Transaction.fromHex(transactionHex);
+      const txid = transaction.getId();
+
+      // Use provided API or fall back to instance API
+      const apiToUse = options?.api || this.api;
+
+      // Broadcast via API if available
+      if (apiToUse && typeof apiToUse.broadcastTransaction === "function") {
+        try {
+          const broadcastResult =
+            await apiToUse.broadcastTransaction(transactionHex);
+          return broadcastResult.txid || txid;
+        } catch (error) {
+          throw new Error(
+            `Failed to broadcast transaction: ${(error as Error).message}`,
+          );
+        }
+      }
+      return txid;
+    } catch (error) {
+      throw new Error(
+        `Failed to submit transaction: ${(error as Error).message}`,
+      );
+    }
+  }
+}

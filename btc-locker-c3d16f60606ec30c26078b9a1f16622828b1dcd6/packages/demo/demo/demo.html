@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>BTC Locker - Browser Demo</title>
+    <style>
+      body {
+        font-family: "Courier New", monospace;
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 20px;
+        background-color: #1a1a1a;
+        color: #FFb70b;
+      }
+      .container {
+        background-color: #000;
+        padding: 20px;
+        border-radius: 8px;
+        margin: 20px 0;
+        border: 1px solid #FFb70b;
+      }
+      .output {
+        background-color: #111;
+        padding: 15px;
+        border-radius: 4px;
+        margin: 10px 0;
+        font-family: monospace;
+        white-space: pre-wrap;
+        border-left: 3px solid #FFb70b;
+      }
+      button {
+        background-color: #F7931A;
+        color: #000;
+        border: none;
+        padding: 10px 20px;
+        margin: 5px;
+        cursor: pointer;
+        border-radius: 4px;
+        font-weight: bold;
+      }
+      button:hover {
+        background-color: #FFb70b;
+      }
+      h1,
+      h2 {
+        color: #FFb70b;
+        text-shadow: 0 0 5px #FFb70b;
+      }
+      .warning {
+        color: #ff6600;
+        background-color: #2a1100;
+        padding: 10px;
+        border-left: 3px solid #ff6600;
+        margin: 10px 0;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>🔒 BTC Locker - Browser Demo</h1>
+
+    <div class="warning">
+      <strong>⚠️ Important:</strong> This is a demonstration only. Never use on
+      Bitcoin mainnet without thorough testing on testnet first!
+    </div>
+
+    <div class="container">
+      <h2>Basic Timelock Demo</h2>
+      <button onclick="runBasicDemo()">Generate Basic Timelock</button>
+      <div id="basicOutput" class="output"></div>
+    </div>
+
+    <div class="container">
+      <h2>Relative Timelock Demo</h2>
+      <button onclick="runRelativeDemo()">
+        Generate Relative Timelock (144 blocks)
+      </button>
+      <div id="relativeOutput" class="output"></div>
+    </div>
+
+    <!-- Include the BTC Locker library -->
+    <script src="dist/btc-locker.bundle.js"></script>
+
+    <script>
+      // Extract the library from the bundle
+      const { BTCLocker } = window.BTCLocker || {};
+
+      // Check if library loaded
+      if (!BTCLocker) {
+        document.addEventListener("DOMContentLoaded", function () {
+          document.querySelectorAll(".output").forEach((output) => {
+            output.textContent =
+              "Error: BTC Locker library not loaded. Make sure the bundle is built: npm run build";
+          });
+        });
+      }
+
+      // Check what's available in the global scope
+      console.log(
+        "Available in window:",
+        Object.keys(window).filter(
+          (k) =>
+            k.includes("bitcoin") || k.includes("Bitcoin") || k.includes("BTC")
+        )
+      );
+      console.log("BTCLocker available:", !!BTCLocker);
+      console.log("window.bitcoin available:", !!window.bitcoin);
+
+      // Define functions in global scope
+      window.runBasicDemo = async function () {
+        const output = document.getElementById("basicOutput");
+        output.textContent = "Generating basic timelock...";
+
+        try {
+          if (!BTCLocker) {
+            throw new Error("BTC Locker library not loaded");
+          }
+
+          // Use testnet for demonstration - let BTCLocker handle the network internally
+          const locker = new BTCLocker("testnet");
+          await locker.init();
+
+          // Generate a key pair
+          const keyPair = await locker.generateKeyPair();
+
+          // Create a timelock for 1 week from now (Unix timestamp)
+          const locktime = Math.floor(Date.now() / 1000) + 7 * 24 * 60 * 60; // 1 week
+          const script = await locker.createTimelockScript(
+            locktime,
+            keyPair.publicKey
+          );
+
+          const result = `Basic Timelock Generated:
+
+Generated Key Pair:
+• Private Key: ${keyPair.privateKey}
+• Public Key: ${keyPair.publicKey}
+• Address: ${keyPair.address}
+
+Timelock Script:
+• Script Address: ${script.address}
+• Locktime: ${new Date(locktime * 1000).toISOString()}
+• Redeem Script: ${script.redeemScript}
+
+To use:
+1. Send Bitcoin to the script address: ${script.address}
+2. Wait until the locktime expires: ${new Date(
+            locktime * 1000
+          ).toLocaleString()}
+3. Spend using the private key and redeem script
+
+⚠️ Keep the private key and redeem script secure!`;
+
+          output.textContent = result;
+        } catch (error) {
+          output.textContent = `Error: ${error.message}`;
+          console.error("Basic demo error:", error);
+        }
+      };
+      
+      window.runRelativeDemo = async function () {
+        const output = document.getElementById("relativeOutput");
+        output.textContent = "Generating relative timelock...";
+
+        try {
+          if (!BTCLocker) {
+            throw new Error("BTC Locker library not loaded");
+          }
+
+          const locker = new BTCLocker("testnet");
+          await locker.init();
+
+          // Generate a key pair
+          const keyPair = await locker.generateKeyPair();
+
+          // Create relative timelock (144 blocks ≈ 1 day)
+          const sequence = 144;
+          const script = await locker.createRelativeTimelockScript(
+            sequence,
+            keyPair.publicKey
+          );
+
+          const result = `Relative Timelock Generated:
+
+Key Pair:
+• Private Key: ${keyPair.privateKey}
+• Public Key: ${keyPair.publicKey}
+• Address: ${keyPair.address}
+
+Relative Timelock Script:
+• Script Address: ${script.address}
+• Sequence: ${script.sequence} blocks
+• Approximate Duration: ${Math.round(
+            (script.sequence * 10) / 60
+          )} minutes (assuming 10min blocks)
+• Redeem Script: ${script.redeemScript}
+
+How it works:
+• Funds are locked for ${script.sequence} blocks after confirmation
+• Unlike absolute timelocks, this is relative to transaction confirmation
+• Useful for payment channels and escrow with relative timing`;
+
+          output.textContent = result;
+        } catch (error) {
+          output.textContent = `Error: ${error.message}`;
+          console.error("Relative demo error:", error);
+        }
+      };
+
+      // Show initial message
+      document.addEventListener("DOMContentLoaded", function () {
+        if (window.BTCLocker) {
+          console.log("🔒 BTC Locker library loaded successfully!");
+          console.log("Available exports:", Object.keys(window.BTCLocker));
+          console.log(
+            "Click the buttons above to test different timelock types."
+          );
+        } else {
+          console.error(
+            "❌ BTC Locker library not found. Make sure to build: npm run build"
+          );
+        }
+      });
+    </script>
+  </body>
+</html>

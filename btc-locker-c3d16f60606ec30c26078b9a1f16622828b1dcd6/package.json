@@ -1,0 +1,35 @@
+{
+  "name": "btc-locker-monorepo",
+  "private": true,
+  "packageManager": "npm@10.8.2",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "test:coverage": "turbo run test:coverage",
+    "lint": "turbo run lint",
+    "type-check": "turbo run type-check",
+    "cli": "npm run start --workspace=packages/cli",
+    "cli-link": "npm link --workspace=packages/cli",
+    "docs": "npm run docs --workspace=packages/core",
+    "demo": "npm run start --workspace=packages/demo",
+    "demo:dev": "npm run dev --workspace=packages/demo",
+    "version": "changeset version",
+    "release": "npm run build && changeset publish",
+    "test-all": "npm run type-check && npm run lint && npm run build && npm run test"
+  },
+  "devDependencies": {
+    "@changesets/cli": "^2.30.0",
+    "@types/node": "^20.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.56.1",
+    "@typescript-eslint/parser": "^8.56.1",
+    "eslint": "^10.0.2",
+    "turbo": "^2.0.0",
+    "typescript": "^5.3.0"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}

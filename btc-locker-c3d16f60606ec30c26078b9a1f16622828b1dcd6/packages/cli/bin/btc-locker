@@ -1,0 +1,142 @@
+#!/usr/bin/env node
+
+/**
+ * BTC Locker CLI
+ * Command-line interface for testing Bitcoin timelock scripts
+ */
+
+// ── Bootstrap (runs before any module is evaluated) ─────────────────────────
+
+// Switch Windows console to UTF-8 so Unicode chars like ₿ render correctly.
+// chcp changes the shared console code page, fixing output through the npm
+// PS1 wrapper that PowerShell uses to launch global binaries.
+if (process.platform === "win32") {
+  try {
+    const { execSync } = await import("child_process");
+    execSync("chcp 65001", { stdio: "pipe", shell: true });
+  } catch (_) {}
+}
+
+// Force ANSI colors — chalk reads FORCE_COLOR at module evaluation time,
+// so this must be set before chalk (or any file importing chalk) is loaded.
+process.env.FORCE_COLOR = process.env.FORCE_COLOR || "1";
+
+// ── Imports (chalk now picks up FORCE_COLOR and the console is UTF-8) ────────
+
+const { Command } = await import("commander");
+const { default: chalk } = await import("chalk");
+const { default: fs } = await import("fs");
+const { default: path } = await import("path");
+const { fileURLToPath } = await import("url");
+
+const { setupScriptsCommands } = await import("./commands/scripts.js");
+const { setupTransactionCommands } = await import("./commands/transactions.js");
+const { setupInspectCommands } = await import("./commands/inspect.js");
+const { setupUtilCommands } = await import("./commands/utils.js");
+const { setupBaseCommands } = await import("./commands/base.js");
+
+// Get the directory of the current module
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Read version from package.json
+const packageJsonPath = path.join(__dirname, "..", "package.json");
+const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
+
+const program = new Command();
+
+// Configure CLI
+program
+  .name("btc-locker")
+  .version(packageJson.version);
+
+// Custom help with ASCII art
+program.configureHelp({
+  sortSubcommands: true,
+});
+
+// Simple ASCII art display function
+function showAsciiArt() {
+  const asciiArt =
+    chalk.hex("#FFB70A")(`
+      
+              *@                      
+            =@@@                      
+           +@@@@                      
+          %@@@@@                      
+        =@@@@@@@      _____                 ___       __                       
+       %@@@@@@@@     / ___/__  ______  ____/ (_)___ _/ /
+     =@@@@@@@@@@     \\__ \\/ / / / __ \\/ __  / / __ \`/ /   
+    #@@@@@@@@@@@    ___/ / /_/ / / / / /_/ / / /_/ / / 
+  =@@@@@@@@@@@@@   /____/\\__,_/_/ /_/\\__,_/_/\\__,_/_/`) +
+  chalk.hex("#704f00")(`
+  +*************=                     
+        ==+******+                   
+                =++*=                
+                    +=                                                                                                                                                                                                                                                                    
+`) + chalk.hex("#FFB70A")(" |₿| Sundial BTC Locker: Bitcoin Staking & Yield CLI |₿|\n");
+  console.log(asciiArt);
+}
+
+// Override the help command to show ASCII art
+program.addHelpCommand(false); // Disable default help command
+
+program
+  .command("help [command]")
+  .description("List command parameters or show general help")
+  .action((cmd) => {
+    if (cmd) {
+      const command = program.commands.find((c) => c.name() === cmd);
+      if (command) {
+        showAsciiArt();
+        command.help();
+      } else {
+        console.error(`Unknown command: ${cmd}`);
+      }
+    } else {
+      showAsciiArt();
+      program.outputHelp();
+    }
+  });
+
+// Global options
+program
+  .option(
+    "-n, --network <network>",
+    "Bitcoin network",
+    "testnet"
+  )
+  .option("-v, --verbose", "Enable verbose logging")
+  .option("--json", "Output results in JSON format");
+
+// Setup command groups
+setupBaseCommands(program);
+setupScriptsCommands(program);
+setupTransactionCommands(program);
+setupInspectCommands(program);
+setupUtilCommands(program);
+
+// Error handling
+process.on("unhandledRejection", (reason, promise) => {
+  console.error(chalk.red("Unhandled Rejection at:"), promise);
+  console.error(chalk.red("Reason:"), reason);
+  process.exit(1);
+});
+
+// Check if help should be shown and show ASCII art first
+if (
+  !process.argv.slice(2).length ||
+  process.argv.includes("--help") ||
+  process.argv.includes("-h")
+) {
+  showAsciiArt();
+}
+
+// Parse arguments
+program.parse(process.argv);
+
+// Show help if no command provided
+if (!process.argv.slice(2).length) {
+  program.outputHelp();
+  process.exit(0);
+}
