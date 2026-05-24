@@ -1,4 +1,4 @@
-# Bug Bounty Submission — CRITICAL-1
+# Bug Bounty Submission — CRITICAL-3
 
 **Title:** Server Generates and Transmits Private Keys Over HTTP; API Endpoints Mark `privateKeys` as Required But Silently Discard Them, Returning Unsigned PSBTs as "Completed Transactions"
 

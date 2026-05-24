@@ -1,10 +1,16 @@
 /**
- * Proof of Concept — CRITICAL-1
+ * !! INVALIDATED — DO NOT SUBMIT !!
+ * This PoC was written speculatively and describes a bug that does NOT exist
+ * in the current codebase. The actual hasConditionalLogic() implementation
+ * (packages/core/src/locker/core.ts:350) uses bitcoin.script.decompile(),
+ * which is opcode-aware and correctly distinguishes OP_IF opcodes from
+ * public key bytes that happen to contain 0x63/0x64. This finding would be
+ * rejected as invalid/not reproducible.
+ *
+ * Original (incorrect) claim:
  * hasConditionalLogic() false positive in BTCLockerCore.finalizeTransaction()
  * causes invalid witness construction for timelock scripts whose public key
  * bytes contain 0x63 (OP_IF) or 0x64 (OP_NOTIF), leading to permanent fund lock.
- *
- * Run: node poc.mjs
  */
 
 import * as bitcoin from "bitcoinjs-lib";

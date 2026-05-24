@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * CRITICAL-1 Proof of Concept
+ * CRITICAL-3 Proof of Concept
  * ═══════════════════════════
  * Demonstrates two tightly coupled vulnerabilities in the btc-locker demo server:
  *
